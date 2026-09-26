@@ -1,0 +1,21 @@
+# Environment for export_adnet_onnx.py. Runs on a laptop; no CUDA or mmcv needed.
+#   cd tools && pixi run python export_adnet_onnx.py --adnet-repo ... --config ... --weights ...
+[workspace]
+name = "adnet-export"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
+
+[dependencies]
+python = "3.12.*"
+
+[pypi-dependencies]
+torch = "==2.8.*"
+torchvision = "==0.23.*"
+onnx = "*"
+onnxruntime = "*"
+opencv-python-headless = "*"
+scipy = "*"
+addict = "*"
+yapf = "*"
+timm = "*"
+six = "*"
