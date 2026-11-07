@@ -1,20 +1,19 @@
-# lane-seg configuration. Every key is optional; defaults are shown.
+# clrnet-lane configuration. Every key is optional; defaults are shown.
 # Relative paths are resolved against this file's directory.
+# In rust-autonomy-stack the node reads $CEV_CAR_DIR/lane_seg.toml (cars/<car>/lane_seg.toml).
 
 [model]
-# Drop the two files from tools/export_adnet_onnx.py here.
-backbone = "../models/adnet_backbone.onnx"
-roi_head = "../models/adnet_roi_head.onnx"
-# cpu (laptop), cuda, or tensorrt (Jetson; build with --features tensorrt,cuda).
+path = "../models/clrnet_r18.onnx"
+# cpu, cuda, or tensorrt (Jetson; the default build has all three).
 execution_provider = "cpu"
 trt_fp16 = true
 trt_cache_dir = "../trt_cache"
-# Rows cut off the top before resizing. ADNet was trained on CULane with the
-# top 46% (sky) removed; match the horizon line of the ZED mount.
-cut_top_fraction = 0.35
-conf_threshold = 0.3
-nms_threshold = 45.0   # mean px distance at which two lanes are duplicates
-max_lanes = 5
+# Rows cut off the top before resizing. CLRNet's CULane config crops 270 of 590;
+# match the horizon line of the ZED mount.
+cut_top_fraction = 0.4576
+conf_threshold = 0.4
+nms_threshold = 50.0   # mean px distance (800-wide input) at which two lanes are duplicates
+max_lanes = 4
 
 [camera]
 # ZED left camera at VGA. Copy the real values from
@@ -41,5 +40,5 @@ unknown_cost = 255     # nav2 NO_INFORMATION
 
 [zenoh]
 # config = "zenoh.json5"
-costmap_key = "perception/lane_costmap"
+costmap_key = "cev/perception/lane_costmap"
 depth_wait_ms = 20

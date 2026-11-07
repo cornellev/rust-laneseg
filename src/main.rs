@@ -1,14 +1,16 @@
-//! lane-seg: ZED image (+ depth) over Zenoh -> ADNet -> lane costmap over Zenoh.
+//! clrnet-lane: ZED image (+ depth) over Zenoh -> CLRNet -> lane costmap over Zenoh.
+//!
+//! Config: first argument, else `$LANE_SEG_CONFIG`, else `$CEV_CAR_DIR/lane_seg.toml`
+//! (rust-autonomy-stack sets `CEV_CAR_DIR` to the car's directory), else defaults.
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use lane_seg::{
+use clrnet_lane::{
     config::Config,
     costmap::COSTMAP_ENCODING,
-    model::AdnetOnnx,
+    model::ClrnetOnnx,
     pipeline::LanePipeline,
     zed_frame::{DEPTH_KEY_EXPR, IMAGE_KEY_EXPR, decode_depth_frame, decode_image_frame},
 };
@@ -21,20 +23,20 @@ static RUNNING: AtomicBool = AtomicBool::new(true);
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     ctrlc::set_handler(|| RUNNING.store(false, Ordering::SeqCst))?;
 
-    let config_path = std::env::args_os()
-        .nth(1)
-        .or_else(|| std::env::var_os("LANE_SEG_CONFIG"))
-        .map(PathBuf::from);
+    let config_path = Config::find_path();
     let config = Config::load(config_path.as_deref())?;
+    match &config_path {
+        Some(path) => tracing::info!(config = %path.display(), "loaded config"),
+        None => tracing::warn!("no config given and CEV_CAR_DIR unset, using defaults"),
+    }
 
-    let mut pipeline = LanePipeline::new(AdnetOnnx::load(&config.model)?, &config);
+    // The first TensorRT start builds the engines (minutes); later starts load them from the cache.
+    tracing::info!(model = %config.model.path.display(), provider = ?config.model.execution_provider, "loading model");
+    let mut pipeline = LanePipeline::new(ClrnetOnnx::load(&config.model)?, &config);
 
     let zenoh_config = match &config.zenoh.config {
         Some(path) => zenoh::Config::from_file(path)
@@ -61,12 +63,7 @@ fn main() -> Result<()> {
         .congestion_control(CongestionControl::Drop)
         .wait()
         .map_err(|e| anyhow::anyhow!("declare costmap publisher: {e}"))?;
-    tracing::info!(
-        image = IMAGE_KEY_EXPR,
-        depth = DEPTH_KEY_EXPR,
-        costmap = config.zenoh.costmap_key,
-        "running"
-    );
+    tracing::info!(image = IMAGE_KEY_EXPR, depth = DEPTH_KEY_EXPR, costmap = config.zenoh.costmap_key, "running");
 
     let depth_wait = Duration::from_millis(config.zenoh.depth_wait_ms);
     let mut depth_backlog: VecDeque<(u64, Vec<f32>)> = VecDeque::new();
@@ -130,10 +127,7 @@ fn main() -> Result<()> {
                 continue;
             }
         };
-        if let Err(error) = publisher
-            .put(result.costmap.encode(frame_id, timestamp_ns))
-            .wait()
-        {
+        if let Err(error) = publisher.put(result.costmap.encode(timestamp_ns)).wait() {
             tracing::warn!(%error, "publish costmap");
         }
 

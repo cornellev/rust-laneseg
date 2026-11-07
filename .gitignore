@@ -1,3 +1,4 @@
 /target
-/models/*.onnx
 /trt_cache
+/ort-runtime
+/models/*.pth

@@ -1,41 +1,34 @@
-//! Lane costmap, laid out like `nav2_msgs/Costmap` so costmap-planner-rust's
-//! `Grid` reads it unchanged: `data[row * size_x + col]`, `col` along +x
-//! (forward), `row` along +y (left), cell `(0, 0)` at `origin`.
+//! Lane costmap, laid out like `nav2_msgs/Costmap`: `data[row * size_x + col]`, `col` along
+//! +x (forward), `row` along +y (left), cell `(0, 0)` at `origin`. Costs follow nav2: 0 free,
+//! 254 lethal, 255 no information; costmap-planner-rust treats >= 253 as impassable.
 //!
-//! Costs follow nav2: 0 free, 254 lethal, 255 no information. The planner
-//! treats anything >= 253 as impassable and starts its search at the grid
-//! centre, so the grid is centred on the camera.
+//! The frame is REP-103 with its origin on the road below the left lens, and the grid is
+//! centred there.
 //!
-//! Wire format on `perception/lane_costmap` (all little-endian), a 48-byte
-//! header followed by `size_x * size_y` cost bytes:
+//! Wire format (little-endian): the same 32-byte header virtual-rgbd-sensor's occupancy grid
+//! uses and costmap-planner-rust's `decode_costmap` reads, then `size_x * size_y` cost bytes.
 //!
 //! | Offset | Size | Field |
 //! |---:|---:|---|
-//! | 0 | 4 | ASCII magic `LCM1` |
-//! | 4 | 1 | format version (`1`) |
-//! | 5 | 3 | reserved, zero |
-//! | 8 | 8 | ZED `frame_id` this map was built from, `u64` |
-//! | 16 | 8 | ZED image timestamp in ns, `u64` |
-//! | 24 | 4 | `size_x` (cells forward), `u32` |
-//! | 28 | 4 | `size_y` (cells lateral), `u32` |
-//! | 32 | 4 | resolution in m/cell, `f32` |
-//! | 36 | 4 | `origin_x` in m, `f32` |
-//! | 40 | 4 | `origin_y` in m, `f32` |
-//! | 44 | 4 | reserved, zero |
+//! | 0 | 4 | stamp seconds, `i32` (ZED image timestamp) |
+//! | 4 | 4 | stamp nanoseconds, `u32` |
+//! | 8 | 4 | `size_x` (cells forward), `u32` |
+//! | 12 | 4 | `size_y` (cells lateral), `u32` |
+//! | 16 | 4 | resolution in m/cell, `f32` |
+//! | 20 | 4 | `origin_x` in m, `f32` |
+//! | 24 | 4 | `origin_y` in m, `f32` |
+//! | 28 | 4 | reserved, zero |
 use anyhow::{Result, ensure};
 
 use crate::config::CostmapConfig;
 
-pub const COSTMAP_KEY_EXPR: &str = "perception/lane_costmap";
+pub const COSTMAP_KEY_EXPR: &str = "cev/perception/lane_costmap";
 pub const COSTMAP_ENCODING: &str = "application/vnd.cornellev.costmap";
-pub const COSTMAP_HEADER_LEN: usize = 48;
+pub const COSTMAP_HEADER_LEN: usize = 32;
 
 pub const FREE_SPACE: u8 = 0;
 pub const LETHAL_OBSTACLE: u8 = 254;
 pub const NO_INFORMATION: u8 = 255;
-
-const MAGIC: &[u8; 4] = b"LCM1";
-const VERSION: u8 = 1;
 
 /// A lane marking as a ground-frame polyline `(forward, left)` in metres,
 /// ordered near to far.
@@ -70,12 +63,10 @@ impl Costmap {
             .then(|| (r as usize, c as usize))
     }
 
-    pub fn encode(&self, frame_id: u64, timestamp_ns: u64) -> Vec<u8> {
+    pub fn encode(&self, timestamp_ns: u64) -> Vec<u8> {
         let mut out = Vec::with_capacity(COSTMAP_HEADER_LEN + self.data.len());
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&[VERSION, 0, 0, 0]);
-        out.extend_from_slice(&frame_id.to_le_bytes());
-        out.extend_from_slice(&timestamp_ns.to_le_bytes());
+        out.extend_from_slice(&((timestamp_ns / 1_000_000_000) as i32).to_le_bytes());
+        out.extend_from_slice(&((timestamp_ns % 1_000_000_000) as u32).to_le_bytes());
         out.extend_from_slice(&self.size_x.to_le_bytes());
         out.extend_from_slice(&self.size_y.to_le_bytes());
         out.extend_from_slice(&self.resolution.to_le_bytes());
@@ -86,28 +77,25 @@ impl Costmap {
         out
     }
 
-    /// Returns `(frame_id, timestamp_ns, costmap)`.
-    pub fn decode(payload: &[u8]) -> Result<(u64, u64, Self)> {
+    /// Returns `(timestamp_ns, costmap)`.
+    pub fn decode(payload: &[u8]) -> Result<(u64, Self)> {
         ensure!(payload.len() >= COSTMAP_HEADER_LEN, "costmap too short");
-        ensure!(&payload[..4] == MAGIC, "invalid costmap magic");
-        ensure!(payload[4] == VERSION, "unsupported costmap version");
         let u32_at = |o: usize| u32::from_le_bytes(payload[o..o + 4].try_into().unwrap());
-        let u64_at = |o: usize| u64::from_le_bytes(payload[o..o + 8].try_into().unwrap());
         let f32_at = |o: usize| f32::from_le_bytes(payload[o..o + 4].try_into().unwrap());
-        let (size_x, size_y) = (u32_at(24), u32_at(28));
+        let (size_x, size_y) = (u32_at(8), u32_at(12));
         ensure!(
             payload.len() == COSTMAP_HEADER_LEN + size_x as usize * size_y as usize,
             "costmap length does not match its size"
         );
+        let stamp_ns = u32_at(0) as i32 as i64 as u64 * 1_000_000_000 + u32_at(4) as u64;
         Ok((
-            u64_at(8),
-            u64_at(16),
+            stamp_ns,
             Self {
                 size_x,
                 size_y,
-                resolution: f32_at(32),
-                origin_x: f32_at(36),
-                origin_y: f32_at(40),
+                resolution: f32_at(16),
+                origin_x: f32_at(20),
+                origin_y: f32_at(24),
                 data: payload[COSTMAP_HEADER_LEN..].to_vec(),
             },
         ))
@@ -311,8 +299,20 @@ mod tests {
     #[test]
     fn wire_roundtrip() {
         let map = builder().build(&[straight(1.75)]);
-        let bytes = map.encode(7, 99);
+        let bytes = map.encode(12_000_000_345);
         assert_eq!(bytes.len(), COSTMAP_HEADER_LEN + 300 * 300);
-        assert_eq!(Costmap::decode(&bytes).unwrap(), (7, 99, map));
+        assert_eq!(Costmap::decode(&bytes).unwrap(), (12_000_000_345, map));
+    }
+
+    #[test]
+    fn header_matches_costmap_planner_rust() {
+        // Offsets decode_costmap in costmap_planner_rs/src/extract.rs reads.
+        let map = builder().build(&[]);
+        let b = map.encode(0);
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let f32_at = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        assert_eq!((u32_at(8), u32_at(12)), (map.size_x, map.size_y)); // cols, rows
+        assert_eq!((f32_at(16), f32_at(20), f32_at(24)), (map.resolution, map.origin_x, map.origin_y));
+        assert_eq!(&b[32..], &map.data[..]);
     }
 }

@@ -82,7 +82,7 @@ impl<D: LaneDetector> LanePipeline<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adnet::Lane;
+    use crate::clrnet::Lane;
     use crate::config::CameraConfig;
     use crate::costmap::{FREE_SPACE, LETHAL_OBSTACLE};
     use crate::zed_frame::BGRA_LEN;
@@ -128,8 +128,9 @@ mod tests {
         let near_y = |l: &GroundLane| l[0].1;
         assert!(near_y(&result.ground_lanes[0]) > 0.0);
         assert!(near_y(&result.ground_lanes[1]) < 0.0);
+        // With CLRNet's 270/590 crop these lanes reach about 2.8 m ahead.
         let map = &result.costmap;
-        let (row, col) = map.cell_of(3.0, 0.0).unwrap();
+        let (row, col) = map.cell_of(2.0, 0.0).unwrap();
         assert_eq!(map.at(row, col), FREE_SPACE);
         assert!(map.data.contains(&LETHAL_OBSTACLE));
     }
